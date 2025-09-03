@@ -524,9 +524,11 @@ where
         // would finish.
 
         match self.state.reading {
-            Reading::Continue(..) | Reading::Body(..) | Reading::KeepAlive | Reading::Closed => {
-                return
-            }
+            Reading::Continue(..)
+            | Reading::Body(..)
+            | Reading::KeepAlive
+            | Reading::Draining
+            | Reading::Closed => return,
             Reading::Init => (),
         };
 
@@ -854,13 +856,28 @@ where
 
         let _ = self.poll_read_body(cx);
 
-        // If still in Reading::Body, just give up
+        // If still in Reading::Body, switch to Draining
         match self.state.reading {
             Reading::Init | Reading::KeepAlive => {
-                trace!("body drained")
+                trace!("body drained");
+                self.close_read();
             }
-            _ => self.close_read(),
+            _ => self.drain_read(),
         }
+    }
+
+    pub(super) fn poll_drain_read(&mut self, cx: &mut Context<'_>) {
+        if let Reading::Draining = self.state.reading {
+            match self.io.poll_read_from_io(cx) {
+                Poll::Ready(Ok(0)) | Poll::Ready(Err(_)) => self.state.reading = Reading::Closed,
+                _ => (),
+            };
+            self.state.reading = Reading::Closed;
+        }
+    }
+
+    pub(crate) fn drain_read(&mut self) {
+        self.state.drain_read();
     }
 
     pub(crate) fn close_read(&mut self) {
@@ -965,6 +982,7 @@ enum Reading {
     Continue(Decoder),
     Body(Decoder),
     KeepAlive,
+    Draining,
     Closed,
 }
 
@@ -1049,6 +1067,12 @@ impl State {
         trace!("State::close()");
         self.reading = Reading::Closed;
         self.writing = Writing::Closed;
+        self.keep_alive.disable();
+    }
+
+    fn drain_read(&mut self) {
+        trace!("State::drain_read()");
+        self.reading = Reading::Draining;
         self.keep_alive.disable();
     }
 

@@ -263,6 +263,7 @@ where
                     // just drop, the body will close automatically
                 }
             } else {
+                self.conn.poll_drain_read(cx);
                 return self.conn.poll_read_keep_alive(cx);
             }
         }
